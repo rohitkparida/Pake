@@ -1,0 +1,83 @@
+name: Build Dispatch
+on:
+  repository_dispatch:
+    types: [build_app]
+
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "10.26.2"
+
+jobs:
+  build:
+    name: Build ${{ github.event.client_payload.name }} (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos
+            os: macos-latest
+          - platform: windows
+            os: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build Pake CLI
+        run: pnpm run cli:build
+
+      - name: Prepare Injected Assets
+        shell: bash
+        run: |
+          mkdir -p temp_assets
+          echo "${{ github.event.client_payload.css }}" > temp_assets/injected.css
+          echo "${{ github.event.client_payload.js }}" > temp_assets/injected.js
+
+      - name: Build Application (macOS)
+        if: matrix.platform == 'macos'
+        run: |
+          node dist/cli.js "${{ github.event.client_payload.url }}" \
+            --name "${{ github.event.client_payload.name }}" \
+            --targets universal \
+            --multi-arch \
+            --inject temp_assets/injected.css \
+            --inject temp_assets/injected.js
+          mkdir -p output
+          mv *.dmg output/
+
+      - name: Build Application (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          node dist/cli.js "${{ github.event.client_payload.url }}" `
+            --name "${{ github.event.client_payload.name }}" `
+            --targets x64 `
+            --inject temp_assets/injected.css `
+            --inject temp_assets/injected.js
+          New-Item -ItemType Directory -Force -Path output
+          Move-Item *.msi output/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.event.client_payload.name }}-${{ github.run_id }}
+          files: output/*.*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
